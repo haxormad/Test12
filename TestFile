@@ -1,0 +1,139 @@
+package com.uhg.uhcmr.aem.core.models.impl;
+
+import com.google.common.collect.Iterators;
+import com.uhg.uhcmr.aem.core.models.PageNavigation;
+
+import org.apache.commons.lang.StringUtils;
+import org.apache.sling.models.annotations.Model;
+import org.apache.sling.api.SlingHttpServletRequest;
+import org.apache.sling.api.resource.Resource;
+import org.apache.sling.models.annotations.Default;
+import org.apache.sling.models.annotations.DefaultInjectionStrategy;
+import org.apache.sling.models.annotations.Model;
+import org.apache.sling.models.annotations.injectorspecific.ValueMapValue;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import javax.annotation.PostConstruct;
+import javax.inject.Inject;
+import javax.jcr.Node;
+import javax.jcr.Property;
+import javax.jcr.PropertyIterator;
+import java.util.*;
+
+@Model(
+        adaptables = SlingHttpServletRequest.class,
+        adapters = PageNavigation.class,
+        defaultInjectionStrategy = DefaultInjectionStrategy.OPTIONAL
+)
+public class PageNavigationImpl implements PageNavigation {
+    private static final Logger LOG = LoggerFactory.getLogger(PageNavigationImpl.class);
+
+    @Inject
+    Resource componentResource;
+
+    @Override
+    public Map<String, Object> getNavDetailsWithMap() {
+        List<Map<String, String>> navDetailsMap=new ArrayList<>();
+        List<Map<String, String>> mainNavDetailsMap=new ArrayList<>();
+        Map<String, Object> mainNavMap = new LinkedHashMap<>();
+
+        try {
+            LOG.info("~~~Inside Page Navigation Model v1.2 ~~~");
+            Iterator<Resource> iterator= componentResource.listChildren();
+            Node currentNode = componentResource.adaptTo(Node.class);
+            PropertyIterator pi = currentNode.getProperties();
+            String sectionIndex = "";
+            Map<String, String> tempMap = new HashMap<>();
+            if(currentNode!=null && currentNode.getName()!=null && currentNode.getName().contains("page_navigation")) {
+                String propSectionTitle = "";
+                String propSectionTitleValue = "";
+                String propSectionURLValue = "";
+                while(pi.hasNext())
+                {
+                    Property p = pi.nextProperty();
+                    propSectionTitle  = p.getName();
+                    //String val = p.getString();
+                    if(propSectionTitle.startsWith("section") && propSectionTitle.endsWith("Title")) {
+                        sectionIndex = propSectionTitle.replaceAll("[^0-9]", "");
+                        propSectionTitleValue = currentNode.getProperty(propSectionTitle).getValue().getString();
+                        propSectionURLValue = currentNode.getProperty("section" + sectionIndex + "URL").getValue().getString();
+                        mainNavMap.put(propSectionTitleValue, propSectionURLValue);
+                        tempMap.put(sectionIndex,propSectionTitleValue + "_");
+                    }
+                }
+            }
+
+            //int count= Iterators.size(iterator);
+            Resource navDetail;
+
+            Resource currentNavDetails = null;
+
+            String sectionMapIndex = "";
+            String currentSectionIndex = "";
+
+            while(iterator.hasNext()){
+                    navDetail = iterator.next();
+                    LOG.info("~~~ Node Name: {} ~~~", navDetail.getName());
+                    LOG.info("~~~ Retrieved Value: {} ~~~", navDetail.getName().replaceAll("[^0-9]", ""));
+                    sectionMapIndex = navDetail.getName().replaceAll("[^0-9]", "");
+                    //mainNavMap.put("section" + sectionIndex + "Title", componentResource.getValueMap().get("section" + sectionIndex + "Title").toString());
+                    ////mainNavMap.put(componentResource.getValueMap().get("section" + sectionIndex + "Title").toString(), componentResource.getValueMap().get("section" + sectionIndex + "URL").toString() );
+                    //mainNavMap.put("sectionindex", sectionIndex);
+                    //mainNavDetailsMap.add(mainNavMap);
+                    //navDetail = componentResource.getChild("nav" + i + "details");
+                    if (navDetail != null) {
+                        Map<String, String> navMap = new HashMap<>();
+                        for (Resource nav : navDetail.getChildren()) {
+                            //Map<String, String> navMap = new HashMap<>();
+                            //navMap.put("pagetitle", nav.getValueMap().get("pagetitle", String.class));
+                            //navMap.put("pageurl", nav.getValueMap().get("pageurl", String.class));
+                           /* if (!StringUtils.isEmpty(nav.getValueMap().get("currentpage", String.class))){
+                                navMap.put("currentpage", nav.getValueMap().get("currentpage", String.class));
+                            } else {
+                                navMap.put("currentpage", "false");
+                            }*/
+                            //navMap.put("count", Integer.toString(count));
+                            if (!StringUtils.isEmpty(nav.getValueMap().get("currentpage", String.class))){
+                                if("true".equals(nav.getValueMap().get("currentpage", String.class))){
+                                    //navMap.put("pagetitle", nav.getValueMap().get("pagetitle", String.class));
+                                    //navMap.put("pageurl", nav.getValueMap().get("pageurl", String.class));
+                                    //navMap.put("currentpage", nav.getValueMap().get("currentpage", String.class));
+                                    //navDetailsMap.add(navMap);
+                                    currentSectionIndex = "section" + sectionMapIndex + "-title" + "_NAVPAGE" ;
+                                    currentSectionIndex = tempMap.get(sectionMapIndex);
+                                    currentNavDetails = navDetail;
+                                }
+                            }
+                            //navDetailsMap.add(navMap);
+                        }
+                    }
+                }
+                if(currentNavDetails != null){
+                    Map<String, String> navMap = null;
+                    for (Resource nav : currentNavDetails.getChildren()) {
+                        navMap = new LinkedHashMap<>();
+                        LOG.info("~~~ currentNavDetails Node Name: {} ~~~", nav.getName());
+                        navMap.put("pagetitle", nav.getValueMap().get("pagetitle", String.class));
+                        if("true".equals(nav.getValueMap().get("currentpage", String.class))){
+                            navMap.put("pageurl", "#");
+                        } else {
+                            navMap.put("pageurl", nav.getValueMap().get("pageurl", String.class));
+                        }
+                        navMap.put("currentpage", nav.getValueMap().get("currentpage", String.class));
+                        navDetailsMap.add(navMap);
+                    }
+                    if(navDetailsMap.size() > 0) {
+                        mainNavMap.put(currentSectionIndex, navDetailsMap);
+                    }
+                    }
+        }catch (Exception e){
+            LOG.info("\n ERROR while getting Navigation Details {} ",e.getMessage());
+        }
+        //LOG.info("\n SIZE {} ",navDetailsMap.size());
+        //LOG.info("\n main SIZE {} ",mainNavDetailsMap.size());
+        //return navDetailsMap;
+        LOG.info("~~~~~~~~~~~~~~~~~~~~~ mainNavMap: {} ~~~~~~~~~~~~~~~~~~~~~", mainNavMap);
+        return mainNavMap;
+    }
+}
