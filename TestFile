@@ -1,139 +1,662 @@
-package com.uhg.uhcmr.aem.core.models.impl;
+package com.uhg.uhcmr.aem.core.servlets;
 
-import com.google.common.collect.Iterators;
-import com.uhg.uhcmr.aem.core.models.PageNavigation;
-
+import com.day.cq.search.PredicateGroup;
+import com.day.cq.search.Query;
+import com.day.cq.search.QueryBuilder;
+import com.day.cq.search.result.Hit;
+import com.day.cq.search.result.SearchResult;
+import com.google.gson.Gson;
+import com.uhg.uhcmr.aem.core.models.*;
+import com.uhg.uhcmr.aem.core.util.RandomIDGenerator;
 import org.apache.commons.lang.StringUtils;
-import org.apache.sling.models.annotations.Model;
 import org.apache.sling.api.SlingHttpServletRequest;
+import org.apache.sling.api.SlingHttpServletResponse;
 import org.apache.sling.api.resource.Resource;
-import org.apache.sling.models.annotations.Default;
-import org.apache.sling.models.annotations.DefaultInjectionStrategy;
-import org.apache.sling.models.annotations.Model;
-import org.apache.sling.models.annotations.injectorspecific.ValueMapValue;
+import org.apache.sling.api.resource.ResourceResolver;
+import org.apache.sling.api.servlets.HttpConstants;
+import org.apache.sling.api.servlets.SlingAllMethodsServlet;
+import org.apache.sling.api.servlets.SlingSafeMethodsServlet;
+import org.jsoup.Jsoup;
+import org.jsoup.helper.StringUtil;
+import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
+import org.jsoup.select.Elements;
+import org.osgi.framework.Constants;
+import org.osgi.service.component.annotations.Component;
+import org.osgi.service.component.annotations.Reference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import com.fasterxml.jackson.core.*;
+import com.fasterxml.jackson.databind.*;
 
-import javax.annotation.PostConstruct;
-import javax.inject.Inject;
-import javax.jcr.Node;
-import javax.jcr.Property;
-import javax.jcr.PropertyIterator;
+import javax.jcr.*;
+import javax.servlet.Servlet;
+import java.io.IOException;
 import java.util.*;
 
-@Model(
-        adaptables = SlingHttpServletRequest.class,
-        adapters = PageNavigation.class,
-        defaultInjectionStrategy = DefaultInjectionStrategy.OPTIONAL
-)
-public class PageNavigationImpl implements PageNavigation {
-    private static final Logger LOG = LoggerFactory.getLogger(PageNavigationImpl.class);
+/**
+  @author Vigneshwaran Sugumar
+ * Servlet to get Form/Button/Hyperlink list based on selected resource/page
+ */
 
-    @Inject
-    Resource componentResource;
+/**
+ * Servlet that writes some sample content into the response. It is mounted for
+ * all resources of a specific Sling resource type. The
+ * {@link SlingSafeMethodsServlet} shall be used for HTTP methods that are
+ * idempotent. For write operations use the {@link SlingAllMethodsServlet}.
+ */
+@Component(service = Servlet.class, property = {
+        Constants.SERVICE_DESCRIPTION + "=Servlet to scan and retrieve all the active elements present on the page",
+        "sling.servlet.methods=" + HttpConstants.METHOD_GET,
+        "sling.servlet.paths=" + "/apps/uhc/analyticsjcrnodedata",
+        "sling.servlet.extensions=" + "json"
+})
+public class JCRNodeDataAnalyticsServlet extends SlingSafeMethodsServlet {
+
+    private final Logger LOG = LoggerFactory.getLogger(getClass());
+    private static final String JCRCONTENT = "jcr:content";
+
+    @Reference
+    private QueryBuilder queryBuilder;
 
     @Override
-    public Map<String, Object> getNavDetailsWithMap() {
-        List<Map<String, String>> navDetailsMap=new ArrayList<>();
-        List<Map<String, String>> mainNavDetailsMap=new ArrayList<>();
-        Map<String, Object> mainNavMap = new LinkedHashMap<>();
+    protected void doGet(final SlingHttpServletRequest req,
+                         final SlingHttpServletResponse resp) throws IOException {
+        //Set the response type header to JSON
+        resp.setContentType("application/json; charset=UTF-8");
+        //Resource resource = req.getResource();
+        Resource resource;
+        Resource jcrResource;
+        ResourceResolver resourceResolver = req.getResourceResolver();
+
+        String activeElementType = req.getParameter("activeElementType");
+        EventType eventType = null;
+        if(!StringUtil.isBlank(activeElementType)){
+            eventType = EventType.getEventTypeByValue(activeElementType);
+        }
+        //Map to build queryBuilder
+        Map<String, String> map = new HashMap<>();
+        Map<String, String> xfMap = new HashMap<>();
+
+        switch (Objects.requireNonNull(eventType)) {
+            case BUTTON:
+                LOG.info("~~~ Inside activeElementType button ~~~");
+                map.put("path", req.getParameter("relativePagePath"));
+                map.put("1_property", "sling:resourceType");
+                map.put("1_property.value", "portfolio-content/components/content/button");
+                map.put("1_property.operation", "like");
+                map.put("orderby.sort", "desc");
+                map.put("p.limit", "-1");
+	
+                xfMap.put("path", req.getParameter("relativePagePath"));
+                xfMap.put("group.1_property", "fragmentPath");
+                xfMap.put("group.1_property.value", "%/content/experience-fragments/%");
+                xfMap.put("group.1_property.operation", "exists");
+                xfMap.put("group.2_property", "alternatexf");
+                xfMap.put("group.2_property.value", "%/content/experience-fragments/%");
+                xfMap.put("group.2_property.operation", "exists");
+                xfMap.put("group.p.or", "true");
+                xfMap.put("p.limit", "-1");
+                break;
+            case HYPERLINK:
+                LOG.info("~~~ Inside activeElementType hyperlink ~~~");
+                /*map.put("path", req.getParameter("relativePagePath"));
+                map.put("property", "sling:resourceType");
+                map.put("property.1_value", "portfolio-content/components/content/NewCustomRTE");
+                map.put("property.2_value", "portfolio-content/components/content/responsivewidgets/calluswidgets");
+                map.put("property.operation", "like");
+                map.put("orderby.sort", "desc");
+                map.put("p.limit", "-1");*/
+
+                map.put("path", req.getParameter("relativePagePath"));
+                map.put("property", "sling:resourceType");
+                map.put("property.1_value", "portfolio-content/components/content/NewCustomRTE");
+                map.put("property.2_value", "portfolio-content/components/content/responsivewidgets/calluswidgets");
+                map.put("property.3_value", "portfolio-content/components/content/page-navigation");
+                map.put("property.operation", "like");
+                map.put("orderby.sort", "desc");
+                map.put("p.limit", "-1");
+
+                xfMap.put("path", req.getParameter("relativePagePath"));
+                xfMap.put("group.1_property", "fragmentPath");
+                xfMap.put("group.1_property.value", "%/content/experience-fragments/%");
+                xfMap.put("group.1_property.operation", "exists");
+                xfMap.put("group.2_property", "alternatexf");
+                xfMap.put("group.2_property.value", "%/content/experience-fragments/%");
+                xfMap.put("group.2_property.operation", "exists");
+                xfMap.put("group.p.or", "true");
+                xfMap.put("p.limit", "-1");
+                break;
+            case FORM:
+                LOG.info("~~~ Inside activeElementType form ~~~");
+                map.put("path", req.getParameter("relativePagePath"));
+                map.put("property", "sling:resourceType");
+                map.put("property.1_value", "portfolio-content/components/content/emailcapturewidget");
+                map.put("property.2_value", "portfolio-content/components/content/zipCode");
+                map.put("property.operation", "like");
+                map.put("orderby.sort", "desc");
+
+                map.put("p.limit", "-1");
+                xfMap.put("path", req.getParameter("relativePagePath"));
+                xfMap.put("group.1_property", "fragmentPath");
+                xfMap.put("group.1_property.value", "%/content/experience-fragments/%");
+                xfMap.put("group.1_property.operation", "exists");
+                xfMap.put("group.2_property", "alternatexf");
+                xfMap.put("group.2_property.value", "%/content/experience-fragments/%");
+                xfMap.put("group.2_property.operation", "exists");
+                xfMap.put("group.p.or", "true");
+                xfMap.put("p.limit", "-1");
+                break;
+        }
+        //Query active elements
+        Query query = queryBuilder.createQuery(PredicateGroup.create(map), resourceResolver.adaptTo(Session.class));
+        SearchResult result = query.getResult();
+
+        //Query XR for active elements
+        Query queryXF = queryBuilder.createQuery(PredicateGroup.create(xfMap), resourceResolver.adaptTo(Session.class));
+        SearchResult resultXF = queryXF.getResult();
+
+        List<Resource> resourceList = new ArrayList<>();
+        List<Resource> resourceXFList = new ArrayList<>();
+        List<Resource>  resourceXFResultList = new ArrayList<>();
+
+        // QueryBuilder has a leaking ResourceResolver, so the following work around is required.
+        ResourceResolver leakingResourceResolver = null;
+        ResourceResolver leakingXFResourceResolver = null;
 
         try {
-            LOG.info("~~~Inside Page Navigation Model v1.2 ~~~");
-            Iterator<Resource> iterator= componentResource.listChildren();
-            Node currentNode = componentResource.adaptTo(Node.class);
-            PropertyIterator pi = currentNode.getProperties();
-            String sectionIndex = "";
-            Map<String, String> tempMap = new HashMap<>();
-            if(currentNode!=null && currentNode.getName()!=null && currentNode.getName().contains("page_navigation")) {
-                String propSectionTitle = "";
-                String propSectionTitleValue = "";
-                String propSectionURLValue = "";
-                while(pi.hasNext())
-                {
-                    Property p = pi.nextProperty();
-                    propSectionTitle  = p.getName();
-                    //String val = p.getString();
-                    if(propSectionTitle.startsWith("section") && propSectionTitle.endsWith("Title")) {
-                        sectionIndex = propSectionTitle.replaceAll("[^0-9]", "");
-                        propSectionTitleValue = currentNode.getProperty(propSectionTitle).getValue().getString();
-                        propSectionURLValue = currentNode.getProperty("section" + sectionIndex + "URL").getValue().getString();
-                        mainNavMap.put(propSectionTitleValue, propSectionURLValue);
-                        tempMap.put(sectionIndex,propSectionTitleValue + "_");
-                    }
+            // collecting all the resources that represent hits and put them in a list for work outside of the search service
+            for (final Hit hit : result.getHits()) {
+                if (leakingResourceResolver == null) {
+                    // Get a reference to QB's leaking ResourceResolver
+                    leakingResourceResolver = hit.getResource().getResourceResolver();
                 }
+                // Add all of the pages found in the query to a resources List.
+                resourceList.add(resourceResolver.getResource(hit.getPath()));
             }
 
-            //int count= Iterators.size(iterator);
-            Resource navDetail;
+            for (final Hit hitXF : resultXF.getHits()) {
+                if (leakingXFResourceResolver == null) {
+                    // Get a reference to QB's leaking ResourceResolver
+                    leakingXFResourceResolver = hitXF.getResource().getResourceResolver();
+                }
+                // Add all of the pages found in the query to a resources List
+                resourceXFList.add(resourceResolver.getResource(hitXF.getPath()));
+                LOG.info("resourceXFList Initial size => " + resourceXFList.size());
+            }
 
-            Resource currentNavDetails = null;
-
-            String sectionMapIndex = "";
-            String currentSectionIndex = "";
-
-            while(iterator.hasNext()){
-                    navDetail = iterator.next();
-                    LOG.info("~~~ Node Name: {} ~~~", navDetail.getName());
-                    LOG.info("~~~ Retrieved Value: {} ~~~", navDetail.getName().replaceAll("[^0-9]", ""));
-                    sectionMapIndex = navDetail.getName().replaceAll("[^0-9]", "");
-                    //mainNavMap.put("section" + sectionIndex + "Title", componentResource.getValueMap().get("section" + sectionIndex + "Title").toString());
-                    ////mainNavMap.put(componentResource.getValueMap().get("section" + sectionIndex + "Title").toString(), componentResource.getValueMap().get("section" + sectionIndex + "URL").toString() );
-                    //mainNavMap.put("sectionindex", sectionIndex);
-                    //mainNavDetailsMap.add(mainNavMap);
-                    //navDetail = componentResource.getChild("nav" + i + "details");
-                    if (navDetail != null) {
-                        Map<String, String> navMap = new HashMap<>();
-                        for (Resource nav : navDetail.getChildren()) {
-                            //Map<String, String> navMap = new HashMap<>();
-                            //navMap.put("pagetitle", nav.getValueMap().get("pagetitle", String.class));
-                            //navMap.put("pageurl", nav.getValueMap().get("pageurl", String.class));
-                           /* if (!StringUtils.isEmpty(nav.getValueMap().get("currentpage", String.class))){
-                                navMap.put("currentpage", nav.getValueMap().get("currentpage", String.class));
-                            } else {
-                                navMap.put("currentpage", "false");
-                            }*/
-                            //navMap.put("count", Integer.toString(count));
-                            if (!StringUtils.isEmpty(nav.getValueMap().get("currentpage", String.class))){
-                                if("true".equals(nav.getValueMap().get("currentpage", String.class))){
-                                    //navMap.put("pagetitle", nav.getValueMap().get("pagetitle", String.class));
-                                    //navMap.put("pageurl", nav.getValueMap().get("pageurl", String.class));
-                                    //navMap.put("currentpage", nav.getValueMap().get("currentpage", String.class));
-                                    //navDetailsMap.add(navMap);
-                                    currentSectionIndex = "section" + sectionMapIndex + "-title" + "_NAVPAGE" ;
-                                    currentSectionIndex = tempMap.get(sectionMapIndex);
-                                    currentNavDetails = navDetail;
-                                }
-                            }
-                            //navDetailsMap.add(navMap);
-                        }
+            if(resourceXFList.size() > 0){
+                Map<String, String> xfResultMap = new HashMap<>();
+                Iterator<Resource> it = resourceXFList.iterator();
+                int j=1;
+                while(it.hasNext()) {
+                    Resource resourceXF = it.next();
+                    Node xfNode = resourceXF.adaptTo(Node.class);
+                    if (xfNode != null && xfNode.hasProperty("fragmentPath")) {
+                        xfResultMap.put("group." + j + "_path", xfNode.getProperty("fragmentPath").getValue().toString() + "/jcr:content");
+                        j++;
+                    } else if (xfNode != null && xfNode.hasProperty("alternatexf")) {
+                        xfResultMap.put("group." + j + "_path", xfNode.getProperty("alternatexf").getValue().toString() + "/jcr:content");
+                        j++;
                     }
                 }
-                if(currentNavDetails != null){
-                    Map<String, String> navMap = null;
-                    for (Resource nav : currentNavDetails.getChildren()) {
-                        navMap = new LinkedHashMap<>();
-                        LOG.info("~~~ currentNavDetails Node Name: {} ~~~", nav.getName());
-                        navMap.put("pagetitle", nav.getValueMap().get("pagetitle", String.class));
-                        if("true".equals(nav.getValueMap().get("currentpage", String.class))){
-                            navMap.put("pageurl", "#");
-                        } else {
-                            navMap.put("pageurl", nav.getValueMap().get("pageurl", String.class));
-                        }
-                        navMap.put("currentpage", nav.getValueMap().get("currentpage", String.class));
-                        navDetailsMap.add(navMap);
-                    }
-                    if(navDetailsMap.size() > 0) {
-                        mainNavMap.put(currentSectionIndex, navDetailsMap);
-                    }
-                    }
-        }catch (Exception e){
-            LOG.info("\n ERROR while getting Navigation Details {} ",e.getMessage());
+                xfResultMap.put("group.p.or", "true");
+                if (eventType.equals(EventType.BUTTON)) {
+                    xfResultMap.put("1_property", "sling:resourceType");
+                    xfResultMap.put("1_property.value", "portfolio-content/components/content/button");
+                } else if (eventType.equals(EventType.FORM)) {
+                    xfResultMap.put("property", "sling:resourceType");
+                    xfResultMap.put("property.1_value", "portfolio-content/components/content/emailcapturewidget");
+                    xfResultMap.put("property.2_value", "portfolio-content/components/content/zipCode");
+                } else if (eventType.equals(EventType.HYPERLINK)) {
+                    xfResultMap.put("property", "sling:resourceType");
+                    xfResultMap.put("property.1_value", "portfolio-content/components/content/NewCustomRTE");
+                    xfResultMap.put("property.2_value", "portfolio-content/components/content/responsivewidgets/calluswidgets");
+                    xfResultMap.put("property.2_value", "portfolio-content/components/content/page-navigation");
+                }
+                xfResultMap.put("p.limit", "-1");
+
+                //Query XF Active elements
+                query = queryBuilder.createQuery(PredicateGroup.create(xfResultMap), resourceResolver.adaptTo(Session.class));
+                result = query.getResult();
+
+                for (final Hit hitXF : result.getHits()) {
+                    // Add all of the pages found in the query to a resources List.
+                    resourceXFResultList.add(resourceResolver.getResource(hitXF.getPath()));
+                    LOG.info("~~~~~ Final resourceXFList size => " + resourceXFList.size() + " ~~~~~ ");
+                }
+                //End of XF List
+            }
+        } catch (RepositoryException e) {
+            LOG.info("RepositoryException " + e);
+        } finally {
+            if (leakingResourceResolver != null) {
+                // Closing leaking QueryBuilder resourceResolver.
+                leakingResourceResolver.close();
+            }
+            if (leakingXFResourceResolver != null) {
+                // Closing leaking XF QueryBuilder resourceResolver.
+                leakingXFResourceResolver.close();
+            }
         }
-        //LOG.info("\n SIZE {} ",navDetailsMap.size());
-        //LOG.info("\n main SIZE {} ",mainNavDetailsMap.size());
-        //return navDetailsMap;
-        LOG.info("~~~~~~~~~~~~~~~~~~~~~ mainNavMap: {} ~~~~~~~~~~~~~~~~~~~~~", mainNavMap);
-        return mainNavMap;
+        String responseJson = "";
+        if (eventType.equals(EventType.BUTTON) || eventType.equals(EventType.FORM) || eventType.equals(EventType.PAGE)) {
+            //Create an ArrayList to store objects in, turn this to JSON with GSON.
+            ArrayList<ActiveElementNodeModel> activeElementNodeModels = new ArrayList<>();
+
+            if(resourceXFResultList.size() > 0){
+                resourceList.addAll(resourceXFResultList);
+                LOG.info("~~~~~ After adding XF to resourceList.size() ==> " + resourceList.size() +  " ~~~~~");
+            }
+
+            if(eventType.equals(EventType.PAGE) && !req.getParameter("relativePagePath").isEmpty()){
+                resourceList.add(resourceResolver.getResource(req.getParameter("relativePagePath")));
+            }
+            //Iterate over the resources in the list from the query.
+            for (Resource currentResource : resourceList) {
+                String jcrPageTitle = "";
+                try {
+                    String jcrPath = "";
+                    Node jcrNode = null;
+                    Resource jcrPageResource = null;
+                    if (currentResource.getPath().indexOf(JCRCONTENT) > 0) {
+                        jcrPath = currentResource.getPath().substring(0, currentResource.getPath().indexOf(JCRCONTENT) + JCRCONTENT.length());
+                        jcrPageResource = resourceResolver.getResource(jcrPath);
+                        if (jcrPageResource != null) {
+                            jcrNode = jcrPageResource.adaptTo(Node.class);
+                            jcrPageTitle = jcrNode.getProperty("jcr:title").getString();
+                        }
+                    }
+                } catch (Exception e) {
+                    LOG.info("Exception occurred in fetching jcr:title: " + e);
+                }
+                ActiveElementNodeModel activeElementNodeModel = currentResource.adaptTo(ActiveElementNodeModel.class);
+                if (activeElementNodeModel != null) {
+                    activeElementNodeModel.setAssetTitle(jcrPageTitle);
+                    activeElementNodeModels.add(activeElementNodeModel);
+                }
+            }
+            //Create JSON string
+            if (activeElementNodeModels.size() > 0) {
+                responseJson = new Gson().toJson(activeElementNodeModels);
+            }
+        }
+        //else if(activeElementType.equals("link")) {
+        else if(eventType.equals(EventType.HYPERLINK)) {
+            List<PathDetails> pathDetailList = new ArrayList<>();
+            try {
+                if(resourceXFResultList.size() > 0){
+                    resourceList.addAll(resourceXFResultList);
+                }
+                for (Resource currentResource : resourceList) {
+                    resource = resourceResolver.getResource(currentResource.getPath());
+                    if (resource != null) {
+                        String modifiedDate;
+                        String modifiedBy;
+                        String jcrPath;
+                        String jcrTitle = "";
+                        if(currentResource.getPath().indexOf(JCRCONTENT) > 0) {
+                            jcrPath = currentResource.getPath().substring(0,currentResource.getPath().indexOf(JCRCONTENT) + JCRCONTENT.length());
+                            jcrResource = resourceResolver.getResource(jcrPath);
+                            Node jcrNode = jcrResource.adaptTo(Node.class);
+                            jcrTitle = jcrNode.getProperty("jcr:title").getString();
+                        }
+                        Node node = resource.adaptTo(Node.class);
+                        //modifiedBy
+                        if (node != null && node.hasProperty("modifiedBy")) {
+                            modifiedBy = node.getProperty("modifiedBy").getString();
+                        } else{
+                            modifiedBy = "";
+                        }
+                        //modifiedDate
+                        if (node != null && node.hasProperty("modifiedDate")) {
+                            modifiedDate = node.getProperty("modifiedDate").getString();
+                        } else{
+                            modifiedDate = "";
+                        }
+
+                       if (node != null && currentResource.getResourceType().equals("portfolio-content/components/content/responsivewidgets/calluswidgets")) {
+                            PathDetails pathDetails = getPathDetails(currentResource.getPath(), node.getProperty("contactContent").getString(), modifiedBy, modifiedDate, jcrTitle, TFNType.CONTACT_CONTENT);
+                            if (pathDetails.getParamDetailList() != null && pathDetails.getParamDetailList().size() > 0) {
+                                pathDetailList.add(pathDetails);
+                            }
+                            PathDetails pathDetailsISCampaign = getPathDetails(currentResource.getPath(), node.getProperty("contactContentFromISCampaign").getString(), modifiedBy, modifiedDate,jcrTitle, TFNType.CONTACT_CONTENT_IS_CAMPAIGN);
+                            if (pathDetailsISCampaign.getParamDetailList() != null && pathDetailsISCampaign.getParamDetailList().size() > 0) {
+                                pathDetailList.add(pathDetailsISCampaign);
+                            }
+                        } else if (node != null && node.hasProperty("settext")) {
+                            PathDetails pathDetails = getPathDetails(currentResource.getPath(), node.getProperty("settext").getString(), modifiedBy, modifiedDate, jcrTitle, null);
+                            if (pathDetails.getParamDetailList() != null && pathDetails.getParamDetailList().size() > 0) {
+                                pathDetailList.add(pathDetails);
+                            }
+                        } else if (node != null && currentResource.getResourceType().equals("portfolio-content/components/content/page-navigation")) {
+                           LOG.info("~~~~~ Inside If Condition Page Navigation: currentResource.getPath() => {} ~~~~~", currentResource.getPath());
+                           PathDetails pathDetails = getNavPathDetails(currentResource.getPath(), resourceResolver, jcrTitle);
+                           if (pathDetails.getParamDetailList() != null && pathDetails.getParamDetailList().size() > 0) {
+                               pathDetailList.add(pathDetails);
+                           }
+                       }
+                    }
+                }
+            } catch (Exception e) {
+                LOG.info("Exception " + e);
+            }
+            //Create JSON string
+            if (pathDetailList.size() > 0) {
+                responseJson = new Gson().toJson(pathDetailList);
+            }
+        }
+        if (responseJson.isEmpty()) {
+            responseJson = "No records found.";
+        }
+        // Finally send the JSON as the response of the servlet!
+        LOG.info("~~~~~ JSON String Length => " + responseJson.length() + " ~~~~~");
+        resp.getWriter().print(responseJson);
+    }
+
+    private PathDetails getNavPathDetails(String path, ResourceResolver resourceResolver, String jcrTitle) {
+        PathDetails pathDetails = new PathDetails();
+        pathDetails.setPath(path);
+        List<ParamDetail> paramDetailList = new ArrayList<>();
+        //int position = 1;
+        Node jcrNode = null;
+        Node childJcrNode = null;
+        Resource jcrPageResource = null;
+        Resource childJcrPageResource = null;
+        String jcrPageTitle = "";
+        jcrPageResource = resourceResolver.getResource(path);
+        try {
+            if (jcrPageResource != null) {
+                //jcrPageTitle = jcrNode.getProperty("jcr:title").getString();
+                Iterator<Resource> childIterator = jcrPageResource.listChildren();
+                jcrNode = jcrPageResource.adaptTo(Node.class);
+                PropertyIterator pi = jcrNode.getProperties();
+                if (jcrNode != null && jcrNode.getName() != null && jcrNode.getName().contains("page_navigation")) {
+                    String sectionIndex = "";
+                    String propSectionTitle = "";
+                    String propSectionTitleValue = "";
+                    String propSectionURLValue = "";
+
+                    String assetId;
+                    String dataAssetId = "";
+                    String dataAssetName = "";
+                    String dataAssetContainer = "";
+                    String dataEventType = "";
+                    String dataOtherKey = "";
+                    String dataAssetEnableAnalytics = "";
+                    String dataModifiedBy = "";
+                    String dataModifiedDate = "";
+
+                    while (pi.hasNext()) {
+                        Property p = pi.nextProperty();
+                        propSectionTitle = p.getName();
+                        ParamDetail paramDetail = new ParamDetail();
+                        LOG.info("~~~~~~~ Property Name: {} -- jcrNode.getName(): {} --  jcrNode.getPath(): {} ~~~~~~~", propSectionTitle, jcrNode.getName(), jcrNode.getPath());
+                        if (propSectionTitle.startsWith("section") && propSectionTitle.endsWith("Title")) {
+                            sectionIndex = propSectionTitle.replaceAll("[^0-9]", "");
+                            int position = Integer.parseInt(sectionIndex);
+                            LOG.info("~~~~~||||| Property Title Value ===> {} |||||~~~~~", propSectionTitle);
+                            propSectionTitleValue = jcrNode.getProperty(propSectionTitle).getValue().getString();
+                            if(jcrNode.hasProperty("section" + sectionIndex + "URL")){
+                                propSectionURLValue = jcrNode.getProperty("section" + sectionIndex + "URL").getValue().getString();
+                                LOG.info("~~~ Inside IF propSectionURLValue => {} ~~~", propSectionURLValue);
+                            } else{
+                                propSectionURLValue = "#";
+                                LOG.info("~~~ Inside ELSE propSectionURLValue => {} ~~~", propSectionURLValue);
+                            }
+                            /* String assetId;
+                            String dataAssetId = "";
+                            String dataAssetName = "";
+                            String dataAssetContainer = "";
+                            String dataEventType = "";
+                            String dataOtherKey = "";
+                            String dataAssetEnableAnalytics = "";
+                            String dataModifiedBy = "";
+                            String dataModifiedDate = ""; */
+
+                            if (jcrNode.hasProperty("asset" + sectionIndex + "JSON")) {
+                                ObjectMapper mapper = new ObjectMapper();
+                                ParamDetail assetParam = mapper.readValue(jcrNode.getProperty("asset" + sectionIndex + "JSON").getValue().getString(), ParamDetail.class);
+                                dataAssetId = assetParam.getAssetId();
+                                dataAssetName = assetParam.getAssetName();
+                                dataAssetContainer = assetParam.getAssetContainer();
+                                dataEventType = assetParam.getEventType();
+                                dataOtherKey = assetParam.getOtherKeyValue();
+                                dataAssetEnableAnalytics = assetParam.getEnableAnalyticsData();
+                                dataModifiedBy = assetParam.getModifiedBy();
+                                dataModifiedDate = assetParam.getModifiedDate();
+
+                            }
+                                LOG.info("~~~ dataAssetId => {} ~~~~", dataAssetId);
+                                LOG.info("~~~ dataAssetName => {} ~~~~", dataAssetName);
+                                LOG.info("~~~ dataAssetContainer => {} ~~~~", dataAssetContainer);
+                                LOG.info("~~~ dataEventType => {} ~~~~", dataEventType);
+                                LOG.info("~~~ dataOtherKey => {} ~~~~", dataOtherKey);
+                                LOG.info("~~~ dataAssetEnableAnalytics => {} ~~~~", dataAssetEnableAnalytics);
+                                if (!StringUtil.isBlank(dataAssetId)) {
+                                    assetId = dataAssetId;
+                                } else {
+                                    assetId = "link-" + RandomIDGenerator.generateRandomID(10);
+                                }
+                                if (StringUtil.isBlank(dataAssetName)) {
+                                    dataAssetName = "";
+                                }
+                                if (StringUtil.isBlank(dataAssetContainer)) {
+                                    dataAssetContainer = jcrTitle;
+                                }
+                                if (StringUtil.isBlank(dataEventType)) {
+                                    dataEventType = "";
+                                }
+                                if (StringUtil.isBlank(dataOtherKey)) {
+                                    dataOtherKey = "";
+                                }
+                                if (StringUtil.isBlank(dataAssetEnableAnalytics)) {
+                                    dataAssetEnableAnalytics = "";
+                                }
+
+                                if (!StringUtil.isBlank(propSectionURLValue)) {
+                                    paramDetail.setPosition(position + "");
+                                    if (!StringUtil.isBlank(propSectionURLValue)) {
+                                        paramDetail.setHyperLink(propSectionURLValue);
+                                        paramDetail.setAssetId(assetId);
+                                        paramDetail.setAssetName(dataAssetName);
+                                        paramDetail.setAssetContainer(dataAssetContainer);
+                                        paramDetail.setEnableAnalyticsData(dataAssetEnableAnalytics);
+                                        paramDetail.setEventType(dataEventType);
+                                        paramDetail.setOtherKeyValue(dataOtherKey);
+
+                                        if (!StringUtil.isBlank(dataAssetId)) {
+                                            paramDetail.setModifiedBy(dataModifiedBy);
+                                            paramDetail.setModifiedDate(dataModifiedDate);
+                                        }
+                                    }
+                                    if (!StringUtil.isBlank(propSectionTitleValue)) {
+                                        paramDetail.setHyperLinkText(propSectionTitleValue);
+                                    }
+                                    //position = position + 1;
+                                    paramDetailList.add(paramDetail);
+                                    pathDetails.setParamDetailList(paramDetailList);
+                                    LOG.info("~~~~ paramDetailList Size : {} ~~~~~~ " + paramDetailList.size());
+                                }
+                            //}
+                        }
+                    }
+                    //Goes here for child Navigation
+                    Resource navDetail;
+                    Resource currentNavDetails = null;
+                    while(childIterator.hasNext()){
+                        navDetail = childIterator.next();
+                        LOG.info("~~~~~<<< Parent navDetail.getPath: {} >>>~~~~~", navDetail.getPath());
+                        if (navDetail != null && !navDetail.getPath().contains("cq:responsive")) {
+                            for (Resource nav : navDetail.getChildren()) {
+                                LOG.info("~~~~~<<< child nav.getPath: {} >>>~~~~~", nav.getPath());
+                                if (!StringUtils.isEmpty(nav.getValueMap().get("currentpage", String.class))){
+                                    if("true".equals(nav.getValueMap().get("currentpage", String.class))){
+                                        currentNavDetails = navDetail;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    //Goes here for child Navigation
+                    if(currentNavDetails != null){
+                        Map<String, String> navMap = null;
+                        for (Resource childNav : currentNavDetails.getChildren()) {
+                            LOG.info("~~~~~<<<||| currentNavDetails.getPath: {} |||>>>~~~~~", currentNavDetails.getPath());
+                            LOG.info("~~~~~<<<||| childNav.getPath: {} |||>>>~~~~~", childNav.getPath());
+                            ParamDetail childParamDetail = new ParamDetail();
+                            childJcrPageResource = resourceResolver.getResource(childNav.getPath());
+                            childJcrNode = childJcrPageResource.adaptTo(Node.class);
+
+                            if (childJcrNode.hasProperty("assetJSON")) {
+                                ObjectMapper mapper = new ObjectMapper();
+                                ParamDetail assetParam = mapper.readValue(childJcrNode.getProperty("assetJSON").getValue().getString(), ParamDetail.class);
+                                dataAssetId = assetParam.getAssetId();
+                                dataAssetName = assetParam.getAssetName();
+                                dataAssetContainer = assetParam.getAssetContainer();
+                                dataEventType = assetParam.getEventType();
+                                dataOtherKey = assetParam.getOtherKeyValue();
+                                dataAssetEnableAnalytics = assetParam.getEnableAnalyticsData();
+                                dataModifiedBy = assetParam.getModifiedBy();
+                                dataModifiedDate = assetParam.getModifiedDate();
+
+                            }
+                            LOG.info("~~~ dataAssetId => {} ~~~~", dataAssetId);
+                            LOG.info("~~~ dataAssetName => {} ~~~~", dataAssetName);
+                            LOG.info("~~~ dataAssetContainer => {} ~~~~", dataAssetContainer);
+                            LOG.info("~~~ dataEventType => {} ~~~~", dataEventType);
+                            LOG.info("~~~ dataOtherKey => {} ~~~~", dataOtherKey);
+                            LOG.info("~~~ dataAssetEnableAnalytics => {} ~~~~", dataAssetEnableAnalytics);
+                            if (!StringUtil.isBlank(dataAssetId)) {
+                                assetId = dataAssetId;
+                            } else {
+                                assetId = "link-" + RandomIDGenerator.generateRandomID(10);
+                            }
+                            if (StringUtil.isBlank(dataAssetName)) {
+                                dataAssetName = "";
+                            }
+                            if (StringUtil.isBlank(dataAssetContainer)) {
+                                dataAssetContainer = jcrTitle;
+                            }
+                            if (StringUtil.isBlank(dataEventType)) {
+                                dataEventType = "";
+                            }
+                            if (StringUtil.isBlank(dataOtherKey)) {
+                                dataOtherKey = "";
+                            }
+                            if (StringUtil.isBlank(dataAssetEnableAnalytics)) {
+                                dataAssetEnableAnalytics = "";
+                            }
+
+                            if (childJcrNode.hasProperty("pageurl")) {
+                                //childParamDetail.setPosition(position + "");
+                                if (!StringUtil.isBlank(childJcrNode.getProperty("pageurl").getValue().getString())) {
+                                    childParamDetail.setHyperLink(childJcrNode.getProperty("pageurl").getValue().getString());
+                                    childParamDetail.setAssetId(assetId);
+                                    childParamDetail.setAssetName(dataAssetName);
+                                    childParamDetail.setAssetContainer(dataAssetContainer);
+                                    childParamDetail.setEnableAnalyticsData(dataAssetEnableAnalytics);
+                                    childParamDetail.setEventType(dataEventType);
+                                    childParamDetail.setOtherKeyValue(dataOtherKey);
+
+                                    if (!StringUtil.isBlank(dataAssetId)) {
+                                        childParamDetail.setModifiedBy(dataModifiedBy);
+                                        childParamDetail.setModifiedDate(dataModifiedDate);
+                                    }
+                                }
+                                if (!StringUtil.isBlank(childJcrNode.getProperty("pagetitle").getValue().getString())) {
+                                    childParamDetail.setHyperLinkText(childJcrNode.getProperty("pagetitle").getValue().getString());
+                                }
+                                //position = position + 1;
+                                paramDetailList.add(childParamDetail);
+                                LOG.info("~~~~ paramDetail Child List Size : {} ~~~~~~ " + paramDetailList.size());
+                            }
+
+                        }
+                        pathDetails.setParamDetailList(paramDetailList);
+                    }
+                    //Ends Here - Intermediate
+                }
+            }
+        } catch(Exception e){
+            LOG.info("Exception occurred in getNavPathDetails " + e);
+        }
+        //pathDetails.setParamDetailList(paramDetailList);
+        return pathDetails;
+    }
+    private PathDetails getPathDetails(String path, String rteString, String modifiedBy, String modifiedDate, String jcrTitle, TFNType tfnType) {
+        PathDetails pathDetails = new PathDetails();
+        pathDetails.setPath(path);
+        List<ParamDetail> paramDetailList = new ArrayList<>();
+        Document doc = Jsoup.parseBodyFragment(rteString);
+        Elements links = doc.select("a[href]");
+        int position = 1;
+        for (Element link : links) {
+            ParamDetail paramDetail = new ParamDetail();
+            String linkHref = link.attr("href");
+            String assetId;
+            String dataAssetId = link.attr("data-asset-id");
+            String dataAssetName = link.attr("data-asset-name");
+            String dataAssetContainer = link.attr("data-asset-container");
+            String dataEventType = link.attr("data-event-type");
+            String dataOtherKey = link.attr("data-other-key");
+            String dataAssetEnableAnalytics = link.attr("data-asset-enableAnalytics");
+            try {
+                if (!StringUtil.isBlank(dataAssetId)) {
+                    assetId = dataAssetId;
+                } else {
+                    assetId = "link-" + RandomIDGenerator.generateRandomID(10);
+                }
+                if (StringUtil.isBlank(dataAssetName)) {
+                    dataAssetName = "";
+                }
+                if (StringUtil.isBlank(dataAssetContainer)) {
+                    dataAssetContainer = jcrTitle;
+                }
+                if (StringUtil.isBlank(dataEventType)) {
+                    dataEventType = "";
+                }
+                if (StringUtil.isBlank(dataOtherKey)) {
+                    dataOtherKey = "";
+                }
+                if (StringUtil.isBlank(dataAssetEnableAnalytics)) {
+                    dataAssetEnableAnalytics = "";
+                }
+                if (!StringUtil.isBlank(linkHref)) {
+                    paramDetail.setPosition(position + "");
+                    if (!StringUtil.isBlank(linkHref)) {
+                        paramDetail.setHyperLink(linkHref);
+                        paramDetail.setAssetId(assetId);
+                        paramDetail.setAssetName(dataAssetName);
+                        paramDetail.setAssetContainer(dataAssetContainer);
+                        paramDetail.setEnableAnalyticsData(dataAssetEnableAnalytics);
+                        paramDetail.setEventType(dataEventType);
+                        paramDetail.setOtherKeyValue(dataOtherKey);
+                        if (tfnType != null) {
+                            paramDetail.setTfnType(tfnType.getValue());
+                        }
+                        if (!StringUtil.isBlank(dataAssetId)) {
+                            paramDetail.setModifiedBy(modifiedBy);
+                            paramDetail.setModifiedDate(modifiedDate);
+                        }
+                    }
+                    if (!StringUtil.isBlank(link.ownText())) {
+                        paramDetail.setHyperLinkText(link.ownText());
+                    }
+                    for (Element childLink : link.children()) {
+                        if (!StringUtil.isBlank(childLink.ownText())) {
+                            paramDetail.setHyperLinkText(childLink.ownText());
+                        }
+                    }
+                    position = position + 1;
+                    paramDetailList.add(paramDetail);
+                }
+            }
+            catch(Exception e){
+                LOG.info("Exception occurred in getPathDetails " + e);
+            }
+        }
+        pathDetails.setParamDetailList(paramDetailList);
+        return pathDetails;
     }
 }
